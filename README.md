@@ -25,6 +25,8 @@ every save and keeps working when the game's part list changes.
 ### Ghost of the held part
 While you hold a car part, a see-through copy of it is drawn at its place on the car, engine or other assembly:
 - **green** – fits and can be installed now;
+- **orange** – fits, but install another part first, because this one would block it
+  (e.g. the distributor blocks the aux shaft): *"install first: Aux shaft (would be blocked)"*;
 - **yellow** – fits, but it is not original for your car's VIN and would fail the historical (museum) inspection,
   e.g. *"not original for this VIN (Grille): Code is 'L', VIN needs 'ALL'"*; tuning parts are always yellow;
 - **red** – can't be installed yet: *"remove first: Cylinder head"* or *"install first: Lower arm FR"*.
@@ -36,7 +38,8 @@ Shows what is still missing on the thing under your crosshair, in assembly order
 - looking at an **assembly** (engine block on the stand, cylinder head, the engine in the car…) – that assembly;
 - looking at the **car body** – the places around the spot you look at (front suspension, dashboard…).
 
-Green lines can be installed now, grey ones later. Tuning parts are left out, and either/or parts (manual or automatic gear lever,
+Green lines can be installed now and come first; orange ones also fit but would block a part that is still missing
+("first: Aux shaft"); grey ones come later. Tuning parts are left out, and either/or parts (manual or automatic gear lever,
 steel or fibreglass hood…) are shown once as "A / B".
 
 ### Bolt marks (Ctrl+Numpad8)

@@ -7,7 +7,7 @@ using MSCLoader;
 using UnityEngine;
 
 [assembly: AssemblyTitle("AssemblyGuide")]
-[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
 [assembly: AssemblyTrademark("AI generated code (Claude)")]
 
 namespace AssemblyGuide
@@ -19,12 +19,12 @@ namespace AssemblyGuide
         public override string ID { get { return "AssemblyGuide"; } }
         public override string Name { get { return "Assembly Guide"; } }
         public override string Author { get { return "hotkeros"; } }
-        public override string Version { get { return "1.0.0"; } }
+        public override string Version { get { return "1.1.0"; } }
         public override string Description
         {
             get
             {
-                return "Shows a ghost of the part in your hands where it goes: green = fits, yellow = fits but not original for your VIN " +
+                return "Shows a ghost of the part in your hands where it goes: green = fits, orange = fits but install another part first, yellow = fits but not original for your VIN " +
                        "(historical inspection), red = something must be installed/removed first. Toggleable list of missing parts in assembly order. " +
                        "Rules are read from the game's own logic, nothing is hardcoded. (Code written with AI assistance - Claude)";
             }
@@ -154,12 +154,14 @@ namespace AssemblyGuide
             GameObject sock = b.HeldPart != null ? b.HeldSocket : b.LastSocket;
             if (part == null) { P("no part in hands (and none held before)"); Say("no part held yet"); return; }
             string pname = Sockets.PartName(part);
+            if (b.HeldGroup.Length > 0) P("fits one of several places: group '" + b.HeldGroup + "', nearest free one chosen");
             P((b.HeldPart != null ? "part in hands: " : "last held part: ") + pname + " (" + part.name + "), socket: " + (sock == null ? "none" : FullPath(sock.transform)) +
               (b.HeldPart != null ? ", verdict: " + b.HeldVerdict : ""));
             Say(pname + " -> " + (sock == null ? "no socket" : sock.name) + (b.HeldPart != null ? ": " + b.HeldVerdict : " (last held)"));
             if (sock == null) return;
             SocketInfo si;
             if (Sockets.Info.TryGetValue(sock.name, out si)) PrintInfo(si);
+            P("would block (still missing): " + string.Join(", ", Sockets.WouldBlockLive(sock.name).ToArray()));
             InstallCheck c = Sockets.CheckInstall(Sockets.DataFsm(sock));
             P("install check: known=" + c.Known + " allowed=" + c.Allowed + " blockers=[" + string.Join(", ", c.Blockers.ToArray()) + "] needs=[" + string.Join(", ", c.Needs.ToArray()) + "] " + c.Note);
             VinVerdict v = VinCheck.Check(sock, part, true);
@@ -210,7 +212,7 @@ namespace AssemblyGuide
             if (b == null) return;
             List<MissingItem> l = b.CarList;
             P("Car - " + l.Count + " missing:");
-            foreach (MissingItem it in l) P((it.CanNow ? "  [now] " : "        ") + it.Text);
+            foreach (MissingItem it in l) P((it.CanNow ? (it.WouldBlock.Count > 0 ? "  [after " + string.Join(", ", it.WouldBlock.ToArray()) + "] " : "  [now] ") : "        ") + it.Text);
             Say("car: " + l.Count + " missing");
         }
 

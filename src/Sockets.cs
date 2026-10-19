@@ -37,6 +37,9 @@ namespace AssemblyGuide
         public string Text;
         public bool CanNow;
         public int Order;
+        public List<string> WouldBlock = new List<string>();   // still-missing parts this one would block
+        public List<string> Names = new List<string>();        // socket names behind this line
+        public int Rank { get { return CanNow ? (WouldBlock.Count == 0 ? 0 : 1) : 2; } }
     }
 
     public static class Sockets
@@ -292,6 +295,67 @@ namespace AssemblyGuide
             return c;
         }
 
+        // still-missing sockets that installing 'name' would block (alternatives excluded)
+        public static List<string> WouldBlock(string name, ICollection<string> missing)
+        {
+            List<string> res = new List<string>();
+            SocketInfo me;
+            Info.TryGetValue(name, out me);
+            foreach (string m in missing)
+            {
+                SocketInfo o;
+                if (m == name || !Info.TryGetValue(m, out o) || !o.BlockedBy.Contains(name)) continue;
+                if (me != null && me.BlockedBy.Contains(m)) continue;   // mutual = alternatives
+                if (!res.Contains(o.Nice)) res.Add(o.Nice);
+            }
+            return res;
+        }
+
+        // live (active) sockets by name, refreshed every few seconds
+        static Dictionary<string, PlayMakerFSM> live = new Dictionary<string, PlayMakerFSM>();
+        static float liveAt = -100f;
+        public static PlayMakerFSM Live(string name)
+        {
+            if (Time.time - liveAt > 5f)
+            {
+                live.Clear();
+                foreach (PlayMakerFSM f in Resources.FindObjectsOfTypeAll(typeof(PlayMakerFSM)))
+                    if (IsSocket(f) && f.gameObject.activeInHierarchy) live[f.gameObject.name] = f;
+                liveAt = Time.time;
+            }
+            PlayMakerFSM r;
+            return live.TryGetValue(name, out r) && r != null ? r : null;
+        }
+
+        // still-missing live sockets anywhere that installing 'name' would block
+        public static List<string> WouldBlockLive(string name)
+        {
+            List<string> missing = new List<string>();
+            foreach (SocketInfo o in Info.Values)
+            {
+                if (!o.BlockedBy.Contains(name) || o.Optional) continue;
+                PlayMakerFSM f = Live(o.Name);
+                if (f != null && !Installed(f)) missing.Add(o.Name);
+            }
+            return WouldBlock(name, missing);
+        }
+
+        // sockets listed in an ArrayList proxy with this reference name (e.g. "MainBearings" on CORRIS/AssembyDatabase)
+        public static List<GameObject> Group(string reference)
+        {
+            List<GameObject> res = new List<GameObject>();
+            foreach (PlayMakerArrayListProxy p in Resources.FindObjectsOfTypeAll(typeof(PlayMakerArrayListProxy)))
+            {
+                if (p == null || p.referenceName != reference || p.arrayList == null) continue;
+                foreach (object o in p.arrayList)
+                {
+                    GameObject g = o as GameObject;
+                    if (g != null && g.name.StartsWith("VINP_") && !res.Contains(g)) res.Add(g);
+                }
+            }
+            return res;
+        }
+
         // nearest object tagged PART above a socket = the part the socket belongs to
         public static GameObject OwnerPart(Transform socket)
         {
@@ -359,10 +423,26 @@ namespace AssemblyGuide
                 foreach (PlayMakerFSM m in members) { InstallCheck c = CheckInstall(m); if (c.Allowed) can = true; }
                 MissingItem it = new MissingItem();
                 it.Text = text; it.CanNow = can; it.Order = si.Order;
+                foreach (PlayMakerFSM m in members) it.Names.Add(m.gameObject.name);
                 res.Add(it);
             }
+            // which still-missing parts would each item block? (install those first)
+            List<string> missingNames = new List<string>();
+            foreach (PlayMakerFSM f in socks)
+            {
+                SocketInfo si;
+                if (Info.TryGetValue(f.gameObject.name, out si) && !si.Optional && !Installed(f)) missingNames.Add(f.gameObject.name);
+            }
+            foreach (MissingItem it in res)
+                foreach (string n in it.Names)
+                    foreach (string wb in WouldBlock(n, missingNames))
+                        if (!it.WouldBlock.Contains(wb)) it.WouldBlock.Add(wb);
             total = res.Count;
-            res.Sort(delegate (MissingItem a, MissingItem b) { return a.Order.CompareTo(b.Order); });
+            res.Sort(delegate (MissingItem a, MissingItem b)
+            {
+                int c = a.Rank.CompareTo(b.Rank);
+                return c != 0 ? c : a.Order.CompareTo(b.Order);
+            });
             return res;
         }
     }

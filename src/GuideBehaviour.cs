@@ -9,7 +9,7 @@ namespace AssemblyGuide
 {
     using HutongGames.PlayMaker;
 
-    public enum Verdict { None, Green, Yellow, Red, Occupied, Unavailable }
+    public enum Verdict { None, Green, Orange, Yellow, Red, Occupied, Unavailable }
 
     public class GuideBehaviour : MonoBehaviour
     {
@@ -23,11 +23,14 @@ namespace AssemblyGuide
         // ---- held part
         public GameObject HeldPart, HeldSocket;
         public GameObject LastPart, LastSocket;   // last part held (for diagnostics after dropping it)
+        public string HeldGroup = "";             // ArrayReference of parts that fit several places (main bearings, pistons, wheels...)
+        List<GameObject> heldCandidates = new List<GameObject>();
         public PlayMakerFSM HeldSocketData;
         public string HeldName = "";
         public InstallCheck HeldInstall;
         public VinVerdict HeldVin;
         public bool SocketInstalled;
+        public List<string> HeldWouldBlock = new List<string>();   // missing parts that this one would block
         public Verdict HeldVerdict = Verdict.None;
         float nextInstallCheck, nextVinCheck;
         List<MeshFilter> ghostMeshes = new List<MeshFilter>();
@@ -111,6 +114,18 @@ namespace AssemblyGuide
                 FsmGameObject ip = d.FsmVariables.GetFsmGameObject("InstallPoint");
                 if (ip != null) HeldSocket = ip.Value;
             }
+            heldCandidates.Clear(); HeldGroup = "";
+            if (HeldSocket == null && d != null)
+            {
+                // part fits one of several identical places: the game picks the nearest one from a named ArrayList
+                FsmString ar = d.FsmVariables.GetFsmString("ArrayReference");
+                if (ar != null && !string.IsNullOrEmpty(ar.Value))
+                {
+                    HeldGroup = ar.Value;
+                    heldCandidates = Sockets.Group(ar.Value);
+                    PickNearestSocket();
+                }
+            }
             if (HeldSocket != null) HeldSocketData = Sockets.DataFsm(HeldSocket);
             LastPart = part; LastSocket = HeldSocket;
             Matrix4x4 inv = part.transform.worldToLocalMatrix;
@@ -159,10 +174,36 @@ namespace AssemblyGuide
             if (!bolting && bolts.Count > 0) { bolts.Clear(); boltPart = null; }
         }
 
+        // nearest free socket of the part's group (like the game does); re-picked as the player moves
+        void PickNearestSocket()
+        {
+            if (heldCandidates.Count == 0 || HeldPart == null) return;
+            GameObject best = null, bestAny = null; float bd = float.MaxValue, bda = float.MaxValue;
+            Vector3 p = HeldPart.transform.position;
+            foreach (GameObject s in heldCandidates)
+            {
+                if (s == null || !s.activeInHierarchy) continue;
+                float dd = Vector3.Distance(p, s.transform.position);
+                if (dd < bda) { bda = dd; bestAny = s; }
+                if (!Sockets.Installed(Sockets.DataFsm(s)) && dd < bd) { bd = dd; best = s; }
+            }
+            if (best == null) best = bestAny;
+            if (best != HeldSocket)
+            {
+                HeldSocket = best;
+                HeldSocketData = Sockets.DataFsm(best);
+                LastSocket = best;
+                HeldVin = null; nextVinCheck = Time.time + 0.3f; nextInstallCheck = 0f;
+            }
+        }
+
         void RefreshInstall()
         {
+            if (heldCandidates.Count > 0) PickNearestSocket();
             if (HeldSocketData == null) { HeldInstall = null; return; }
             SocketInstalled = Sockets.Installed(HeldSocketData);
+            try { HeldWouldBlock = SocketInstalled ? new List<string>() : Sockets.WouldBlockLive(HeldSocket.name); }
+            catch (Exception) { HeldWouldBlock = new List<string>(); }
             try { HeldInstall = Sockets.CheckInstall(HeldSocketData); }
             catch (Exception e) { HeldInstall = null; ModConsole.Error("[AssemblyGuide] install check: " + e.Message); }
         }
@@ -195,8 +236,10 @@ namespace AssemblyGuide
             }
             else
             {
-                HeldVerdict = yellow ? Verdict.Yellow : Verdict.Green;
-                sb.Append(yellow ? "  <color=#ffd84a>fits</color>" : "  <color=#77ee77>fits</color>");
+                bool orange = HeldWouldBlock.Count > 0;
+                HeldVerdict = orange ? Verdict.Orange : yellow ? Verdict.Yellow : Verdict.Green;
+                sb.Append(orange ? "  <color=#ffa040>fits</color>" : yellow ? "  <color=#ffd84a>fits</color>" : "  <color=#77ee77>fits</color>");
+                if (orange) sb.Append("\n<color=#ffa040>install first: ").Append(string.Join(", ", HeldWouldBlock.ToArray())).Append(" (would be blocked)</color>");
             }
             if (yellow)
             {
@@ -242,6 +285,7 @@ namespace AssemblyGuide
             float a = AssemblyGuideMod.Val(AssemblyGuideMod.sGhostAlpha, 0.35f);
             a *= 0.8f + 0.2f * Mathf.Sin(Time.time * 4f);
             Color c = HeldVerdict == Verdict.Red ? new Color(1f, 0.25f, 0.2f, a)
+                    : HeldVerdict == Verdict.Orange ? new Color(1f, 0.55f, 0.1f, a)
                     : HeldVerdict == Verdict.Yellow ? new Color(1f, 0.85f, 0.1f, a)
                     : new Color(0.25f, 1f, 0.35f, a);
             m.color = c;
@@ -403,7 +447,7 @@ namespace AssemblyGuide
                     sb.Append("<b>").Append(targetName).Append(" - ").Append(targetTotal).Append(" missing</b>\n");
                     Lines(sb, targetList, max);
                 }
-                sb.Append("\n<size=").Append(Mathf.Max(9, textStyle.fontSize - 3)).Append("><color=#77ee77>green</color> = can install now, <color=#999999>grey</color> = later</size>");
+                sb.Append("\n<size=").Append(Mathf.Max(9, textStyle.fontSize - 3)).Append("><color=#77ee77>green</color> = install now, <color=#ffa040>orange</color> = install the named part first, <color=#999999>grey</color> = later</size>");
                 string text = sb.ToString();
                 float w = textStyle.fontSize * 20f;
                 float h = textStyle.CalcHeight(new GUIContent(text), w);
@@ -468,7 +512,10 @@ namespace AssemblyGuide
             foreach (MissingItem it in list)
             {
                 if (n++ >= max) { sb.Append("<color=#999999>... ").Append(list.Count - max).Append(" more</color>\n"); break; }
-                sb.Append(it.CanNow ? "<color=#77ee77>" : "<color=#999999>").Append(it.Text).Append("</color>\n");
+                if (!it.CanNow) sb.Append("<color=#999999>").Append(it.Text).Append("</color>\n");
+                else if (it.WouldBlock.Count > 0)
+                    sb.Append("<color=#ffa040>").Append(it.Text).Append("</color> <color=#bbbbbb>- first: ").Append(string.Join(", ", it.WouldBlock.ToArray())).Append("</color>\n");
+                else sb.Append("<color=#77ee77>").Append(it.Text).Append("</color>\n");
             }
         }
     }

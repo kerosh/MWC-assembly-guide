@@ -12,6 +12,9 @@ Engine: **Unity 5.0.0f4**, Mono 2.0 profile. Loader: MSCLoader 1.3.x.
   States `Idle` -(CHECK)-> **`Allow install?`** -> `Far` <-> `Near` -> `Install 1` -> `Install 2` -> `Installed`; global INSTALL / REMOVE / BACK.
 - Part FSM **`Data`**: `Name`, `Installed`, `Type` (int), `Code` / `Model` (string), `Facelift`, GameObject **`InstallPoint`** (set by the
   spawner when the part is created), `Bolts`.
+- Parts that fit several identical places have no `InstallPoint`; instead string `Data.ArrayReference` (e.g. `MainBearings`, `Pistons`,
+  `Rockers`, `Wheels`) names an ArrayList proxy on `CORRIS/AssembyDatabase` listing the sockets (item 0 is empty). On pickup the part
+  sends CHECK to an installer FSM which takes the closest socket from that list.
 - Player: `PLAYER/Pivot/AnimPivot/Camera/FPSCamera/1Hand_Assemble/Hand`, FSM `PickUp`, var `PickedObject`, state `Part picked` while holding a part.
   It sends ASSEMBLING to the part, whose `Another part?` state sets the socket's `ActivePart` and sends CHECK.
 

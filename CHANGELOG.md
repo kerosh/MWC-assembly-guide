@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.0 (unreleased)
+### Added
+- Parts that would block a still-missing part are orange instead of green, with the part to install first
+  (e.g. distributor while the aux shaft is missing): orange ghost + "install first: Aux shaft (would be blocked)",
+  and in the list they are sorted below the parts that are safe to install now.
+
+### Fixed
+- Parts that fit one of several identical places (main bearings, pistons, rockers, spark plugs, wheels, hubcaps, suspension arms,
+  shocks, springs...) showed "no install point". They now use the game's group list (`Data.ArrayReference`) and the nearest free place.
+
 ## 1.0.0 (unreleased)
 First version.
 
