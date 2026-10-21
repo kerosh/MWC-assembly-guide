@@ -18,6 +18,10 @@ Engine: **Unity 5.0.0f4**, Mono 2.0 profile. Loader: MSCLoader 1.3.x.
 - Player: `PLAYER/Pivot/AnimPivot/Camera/FPSCamera/1Hand_Assemble/Hand`, FSM `PickUp`, var `PickedObject`, state `Part picked` while holding a part.
   It sends ASSEMBLING to the part, whose `Another part?` state sets the socket's `ActivePart` and sends CHECK.
 
+- Installing a part changes its tag (it is no longer `PART`), so the mod identifies parts by their `Data` FSM having a `Name`
+  variable. Many installed parts also switch their collider off.
+- Socket state `Allow removal?`: leaving via FINISHED = can't be removed now (something blocks it).
+
 ## Install rules
 In each socket's `Allow install?` state: `GetFsmBool(<other socket>, "Data", "Installed")` + `BoolNoneTrue` = blocked by
 (e.g. head gasket blocked by cylinder head, crankshaft by main bearings / pistons / oil pan); `BoolTest` / `BoolAllTrue` = requires

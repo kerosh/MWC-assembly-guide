@@ -44,9 +44,12 @@ steel or fibreglass hood…) are shown once as "A / B".
 
 ### Bolt marks (Ctrl+Numpad8)
 The part under the crosshair gets dots on its bolts, visible through everything:
-- **red** – loose (or not fully tight), **green** – tight;
+- **red** – loose (or not fully tight), **green** – tight (not drawn when the part can't be removed right now anyway);
 - **yellow** – adjustment: valve adjusters, carburettor idle/mixture screws, distributor timing, alternator belt tension,
   toe adjustment, adjustable shocks.
+
+Loose bolts elsewhere on the same assembly get smaller red dots. Optional **bolt list** (setting): what is loose / tight /
+to adjust on the looked-at part, as count × tool ("4 × 10 mm, 1 × screwdriver").
 
 ## Requirements
 - My Winter Car (Steam).

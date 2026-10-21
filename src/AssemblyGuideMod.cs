@@ -7,7 +7,7 @@ using MSCLoader;
 using UnityEngine;
 
 [assembly: AssemblyTitle("AssemblyGuide")]
-[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
 [assembly: AssemblyTrademark("AI generated code (Claude)")]
 
 namespace AssemblyGuide
@@ -19,7 +19,7 @@ namespace AssemblyGuide
         public override string ID { get { return "AssemblyGuide"; } }
         public override string Name { get { return "Assembly Guide"; } }
         public override string Author { get { return "hotkeros"; } }
-        public override string Version { get { return "1.1.0"; } }
+        public override string Version { get { return "1.2.0"; } }
         public override string Description
         {
             get
@@ -31,7 +31,7 @@ namespace AssemblyGuide
         }
         public override MSCLoader.Game SupportedGames { get { return MSCLoader.Game.MyWinterCar; } }
 
-        public static SettingsCheckBox sGhost, sLabel, sVin, sBolts;
+        public static SettingsCheckBox sGhost, sLabel, sVin, sBolts, sBoltList;
         public static SettingsSlider sGhostAlpha, sGhostDist, sListLines, sFont, sLookRange, sAreaRadius, sBoltSize;
         public static AssemblyGuideMod Instance;
         public static SettingsKeybind kList, kDump, kBolts;
@@ -58,6 +58,7 @@ namespace AssemblyGuide
             Settings.AddHeader("Bolt marks");
             sBolts = Settings.AddCheckBox("bolts", "Mark bolts of the part under the crosshair (red loose, green tight, yellow adjustment)", true);
             sBoltSize = Settings.AddSlider("boltSize", "Mark size", 6f, 30f, 14f, null, 0);
+            sBoltList = Settings.AddCheckBox("boltList", "Show bolt list (count x tool size) for the looked-at part", false);
             Settings.AddHeader("Missing parts list");
             Settings.AddText("The list shows what is missing on the assembly under your crosshair (engine, head...) or, on the car itself, around the spot you look at.");
             sListLines = Settings.AddSlider("listLines", "Max lines", 5f, 40f, 15f, null, 0);
@@ -212,7 +213,7 @@ namespace AssemblyGuide
             if (b == null) return;
             List<MissingItem> l = b.CarList;
             P("Car - " + l.Count + " missing:");
-            foreach (MissingItem it in l) P((it.CanNow ? (it.WouldBlock.Count > 0 ? "  [after " + string.Join(", ", it.WouldBlock.ToArray()) + "] " : "  [now] ") : "        ") + it.Text);
+            foreach (MissingItem it in l) P(it.NotNeeded ? "  (" + it.Text + ")" : (it.CanNow ? (it.WouldBlock.Count > 0 ? "  [after " + string.Join(", ", it.WouldBlock.ToArray()) + "] " : "  [now] ") : "        ") + it.Text);
             Say("car: " + l.Count + " missing");
         }
 

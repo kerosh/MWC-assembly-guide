@@ -39,7 +39,9 @@ namespace AssemblyGuide
         public Src S;
         public List<GameObject> TrueSources = new List<GameObject>();   // bool inputs that were true
         public List<GameObject> FalseSources = new List<GameObject>();  // bool inputs that were false
+        public List<string> TrueVars = new List<string>(), FalseVars = new List<string>();   // which variable each source was read from
         public bool HasCmp, Eq;   // equality compare: target value vs reference value
+        public bool HasTarget, HasOther;   // inputs include the held part / other parts (mixed checks fork on the other parts)
         public string Var, Val, Ref;
     }
 
@@ -187,8 +189,12 @@ namespace AssemblyGuide
                         if (d != null)
                         {
                             d.State = s.Name;
-                            if (d.S == Src.Target && !st.TaintedStates.Contains(s.Name)) st.TaintedStates.Add(s.Name);
-                            if (Wildcards && d.S == Src.Other && alts != null && alts.Count > 1 && forks < MaxForks)
+                            bool hasT = d.HasTarget || d.S == Src.Target, hasO = d.HasOther || d.S == Src.Other;
+                            if (hasT && !st.TaintedStates.Contains(s.Name)) st.TaintedStates.Add(s.Name);
+                            if (hasT) st.TargetSeen = true;
+                            // decisions that depend on other parts fork - also when the held part is one of the inputs
+                            // (e.g. "dashboard + covers + glovebox all installed" while holding a cover)
+                            if (Wildcards && hasO && alts != null && alts.Count > 1 && forks < MaxForks)
                             {
                                 if (TryFork(st, s.Name, alts, d)) return;   // st now holds the chosen branch's final state
                             }
@@ -347,11 +353,14 @@ namespace AssemblyGuide
             if (go == null)
             {
                 // the object to read from is missing (e.g. empty socket): the real action keeps the old value.
-                // If the missing object was another part, the stale value is "unknown" -> Other.
+                // That stale value says nothing about the missing part -> "unknown" (Other), even if it was
+                // read from the held part earlier (otherwise e.g. the brake check blames the exhaust manifold).
                 if (osrc == Src.Other || osrc == Src.Target)
                 {
                     SVal old = Read(st, store);
-                    Write(st, store, new SVal(old.V, Max(old.S, Src.Other), null));
+                    SVal stale = new SVal(old.V, Src.Other, null);
+                    stale.Var = old.Var;
+                    Write(st, store, stale);
                 }
                 return;
             }
@@ -486,20 +495,25 @@ namespace AssemblyGuide
                 else if (a is BoolAnyTrue) { BoolAnyTrue x = (BoolAnyTrue)a; vars = x.boolVariables; sendEvent = x.sendEvent; store = x.storeResult; kind = "any"; }
                 else { BoolNoneTrue x = (BoolNoneTrue)a; vars = x.boolVariables; sendEvent = x.sendEvent; store = x.storeResult; kind = "none"; }
                 if (vars == null || vars.Length == 0) return null;
-                Src s = Src.Plain; int trues = 0;
+                Src s = Src.Plain; int trues = 0; bool assumed = false;
                 d = Dec(name, Src.Plain, "");
                 StringBuilder sb = new StringBuilder();
                 foreach (FsmBool fb in vars)
                 {
                     SVal v = Read(st, fb); s = Max(s, v.S);
-                    if (B(v.V)) trues++;
+                    bool bv = B(v.V);
+                    // what-if: other parts are assumed right ("installed" for all/any, "not installed" for none).
+                    // Needed because some checks don't branch but store the result (hubcaps: all four installed -> Results)
+                    if (Wildcards && v.S == Src.Other) { bv = kind != "none"; assumed = true; }
+                    if (bv) trues++;
                     Src1(d, v);
                     if (sb.Length > 0) sb.Append(", ");
-                    sb.Append(Who(v)).Append('=').Append(B(v.V));
+                    sb.Append(Who(v)).Append('=').Append(bv);
                 }
                 bool res = kind == "all" ? trues == vars.Length : kind == "any" ? trues > 0 : trues == 0;
-                d.S = s; d.Text = kind + "-true(" + sb + ") -> " + res;
-                Write(st, store, new SVal(res, s, null));
+                d.S = s; d.Text = kind + "-true(" + sb + ") -> " + res + (assumed ? " [others assumed]" : "");
+                Write(st, store, new SVal(res, assumed ? Src.Plain : s, null));
+                if (assumed) { d.HasOther = false; d.S = d.HasTarget ? Src.Target : Src.Plain; return res ? En(sendEvent) : null; }   // decided, no fork needed
                 alts = new List<string>(); AddAlt(alts, En(sendEvent)); AddAlt(alts, null);
                 return res ? En(sendEvent) : null;
             }
@@ -509,7 +523,7 @@ namespace AssemblyGuide
                 SVal v1 = Read(st, x.stringVariable), v2 = Read(st, x.compareTo);
                 bool eq = S(v1.V) == S(v2.V);
                 d = Dec("StringCompare", Max(v1.S, v2.S), Who(v1) + " '" + S(v1.V) + "' vs '" + S(v2.V) + "'");
-                Cmp(d, v1, v2, S(v1.V), S(v2.V), eq);
+                Cmp(d, v1, v2, S(v1.V), S(v2.V), eq); Mark(d, v1); Mark(d, v2);
                 Write(st, x.storeResult, new SVal(eq, d.S, null));
                 alts = new List<string>(); AddAlt(alts, En(x.equalEvent)); AddAlt(alts, En(x.notEqualEvent));
                 return eq ? En(x.equalEvent) : En(x.notEqualEvent);
@@ -517,7 +531,7 @@ namespace AssemblyGuide
             if (a is StringSwitch)
             {
                 StringSwitch x = (StringSwitch)a; SVal v = Read(st, x.stringVariable);
-                d = Dec("StringSwitch", v.S, Who(v) + " '" + S(v.V) + "'");
+                d = Dec("StringSwitch", v.S, Who(v) + " '" + S(v.V) + "'"); Mark(d, v);
                 alts = new List<string>(); string hit = null;
                 if (x.compareTo != null)
                     for (int i = 0; i < x.compareTo.Length && i < x.sendEvent.Length; i++)
@@ -534,14 +548,14 @@ namespace AssemblyGuide
                 SVal v1 = Read(st, x.integer1), v2 = Read(st, x.integer2);
                 int i1 = I(v1.V), i2 = I(v2.V);
                 d = Dec("IntCompare", Max(v1.S, v2.S), Who(v1) + " " + i1 + " vs " + i2);
-                Cmp(d, v1, v2, i1.ToString(), i2.ToString(), i1 == i2);
+                Cmp(d, v1, v2, i1.ToString(), i2.ToString(), i1 == i2); Mark(d, v1); Mark(d, v2);
                 alts = new List<string>(); AddAlt(alts, En(x.equal)); AddAlt(alts, En(x.lessThan)); AddAlt(alts, En(x.greaterThan));
                 return i1 == i2 ? En(x.equal) : i1 < i2 ? En(x.lessThan) : En(x.greaterThan);
             }
             if (a is IntSwitch)
             {
                 IntSwitch x = (IntSwitch)a; SVal v = Read(st, x.intVariable);
-                d = Dec("IntSwitch", v.S, Who(v) + " " + I(v.V));
+                d = Dec("IntSwitch", v.S, Who(v) + " " + I(v.V)); Mark(d, v);
                 alts = new List<string>(); string hit = null;
                 if (x.compareTo != null)
                     for (int i = 0; i < x.compareTo.Length && i < x.sendEvent.Length; i++)
@@ -557,7 +571,7 @@ namespace AssemblyGuide
                 FloatCompare x = (FloatCompare)a;
                 SVal v1 = Read(st, x.float1), v2 = Read(st, x.float2);
                 float f1 = F(v1.V), f2 = F(v2.V), tol = F(Read(st, x.tolerance).V);
-                d = Dec("FloatCompare", Max(v1.S, v2.S), Who(v1) + " " + f1 + " vs " + f2);
+                d = Dec("FloatCompare", Max(v1.S, v2.S), Who(v1) + " " + f1 + " vs " + f2); Mark(d, v1); Mark(d, v2);
                 alts = new List<string>(); AddAlt(alts, En(x.equal)); AddAlt(alts, En(x.lessThan)); AddAlt(alts, En(x.greaterThan));
                 if (Mathf.Abs(f1 - f2) <= tol) return En(x.equal);
                 return f1 < f2 ? En(x.lessThan) : En(x.greaterThan);
@@ -606,10 +620,19 @@ namespace AssemblyGuide
             else { d.Var = v1.Var; d.Val = s1; d.Ref = s2; }
         }
 
+        static void Mark(SimDecision d, SVal v)
+        {
+            if (v == null) return;
+            if (v.S == Src.Target) d.HasTarget = true;
+            else if (v.S == Src.Other) d.HasOther = true;
+        }
+
         static void Src1(SimDecision d, SVal v)
         {
+            Mark(d, v);
             if (v.From == null) return;
-            if (B(v.V)) d.TrueSources.Add(v.From); else d.FalseSources.Add(v.From);
+            if (B(v.V)) { d.TrueSources.Add(v.From); d.TrueVars.Add(v.Var ?? "Installed"); }
+            else { d.FalseSources.Add(v.From); d.FalseVars.Add(v.Var ?? "Installed"); }
         }
 
         static string Who(SVal v)

@@ -109,10 +109,172 @@ namespace AssemblyGuide
             return g.transform.position;
         }
 
-        static GameObject OwnerPart(Transform t)
+        // A part = object with a "Data" FSM that has a part "Name" (sockets VINP_* have none).
+        // Not the PART tag: the game changes the tag of installed parts.
+        static Dictionary<int, bool> isPart = new Dictionary<int, bool>();
+        static float isPartReset;
+        public static bool IsPart(GameObject g)
         {
-            for (Transform p = t; p != null; p = p.parent) if (p.CompareTag("PART")) return p.gameObject;
+            if (g == null || g.name.StartsWith("VINP_")) return false;
+            if (Time.time >= isPartReset) { isPart.Clear(); isPartReset = Time.time + 10f; }
+            bool v;
+            int id = g.GetInstanceID();
+            if (isPart.TryGetValue(id, out v)) return v;
+            PlayMakerFSM d = Sockets.DataFsm(g);
+            v = d != null && d.FsmVariables.GetFsmString("Name") != null;
+            isPart[id] = v;
+            return v;
+        }
+
+        public static GameObject PartOf(Transform t)
+        {
+            for (Transform p = t; p != null; p = p.parent) if (IsPart(p.gameObject)) return p.gameObject;
             return null;
+        }
+
+        static GameObject OwnerPart(Transform t) { return PartOf(t); }
+
+        // can the part be taken off right now? (its socket's "Allow removal?" state; loose parts: yes)
+        public static bool Removable(GameObject part)
+        {
+            if (part == null) return true;
+            Transform s = part.transform.parent;
+            while (s != null && !s.name.StartsWith("VINP_")) s = s.parent;
+            if (s == null) return true;
+            PlayMakerFSM data = Sockets.DataFsm(s.gameObject);
+            if (data == null || !Sockets.Installed(data)) return true;
+            try
+            {
+                FsmSim sim = new FsmSim(data);
+                if (!sim.HasState("Allow removal?")) return true;
+                string denied;
+                if (!sim.Transitions("Allow removal?").TryGetValue("FINISHED", out denied)) return true;
+                sim.StopOnExit = true;
+                SimState st = sim.Run("Allow removal?");
+                return st.ExitState == null || st.ExitState != denied;
+            }
+            catch (Exception) { return true; }
+        }
+
+        // all bolt FSMs in the scene (for "nearest bolt to the line of sight")
+        static List<PlayMakerFSM> all = new List<PlayMakerFSM>();
+        static float allAt = -100f;
+        public static GameObject NearestBoltPart(Vector3 origin, Vector3 dir, float maxDist, float maxPerp)
+        {
+            if (Time.time - allAt > 5f)
+            {
+                all.Clear();
+                foreach (PlayMakerFSM f in Resources.FindObjectsOfTypeAll(typeof(PlayMakerFSM)))
+                    if (IsBoltFsm(f) && f.gameObject.activeInHierarchy) all.Add(f);
+                allAt = Time.time;
+            }
+            GameObject best = null; float bp = maxPerp;
+            foreach (PlayMakerFSM f in all)
+            {
+                if (f == null || !f.gameObject.activeInHierarchy) continue;
+                BoltInfo b = Info(f);
+                if (b.Kind == BoltKind.Unknown) continue;
+                Vector3 v = Pos(b) - origin;
+                float along = Vector3.Dot(v, dir);
+                if (along < 0.1f || along > maxDist) continue;
+                float perp = (v - dir * along).magnitude;
+                if (perp < bp) { GameObject p = PartOf(f.transform); if (p != null) { bp = perp; best = p; } }
+            }
+            return best;
+        }
+
+        // top-most part above (the whole assembly: engine block with everything on it, or the part itself)
+        public static GameObject TopPart(GameObject part)
+        {
+            GameObject top = part;
+            if (part == null) return null;
+            for (Transform p = part.transform.parent; p != null; p = p.parent) if (IsPart(p.gameObject)) top = p.gameObject;
+            return top;
+        }
+
+        // fasteners of the whole assembly that belong to other parts than 'except'
+        public static void CollectOthers(GameObject root, GameObject except, List<BoltInfo> into)
+        {
+            into.Clear();
+            if (root == null) return;
+            foreach (PlayMakerFSM f in root.GetComponentsInChildren<PlayMakerFSM>(false))
+            {
+                if (!IsBoltFsm(f)) continue;
+                if (PartOf(f.transform) == except) continue;
+                BoltInfo b = Info(f);
+                if (b.Kind == BoltKind.Fastener) into.Add(b);
+            }
+        }
+
+        // ---- sizes and tools
+        public static float Size(BoltInfo b)
+        {
+            FsmFloat s = b.Fsm.FsmVariables.GetFsmFloat("Boltsize");
+            if (s == null) s = b.Fsm.FsmVariables.GetFsmFloat("BoltSize");
+            return s == null ? 0f : s.Value;
+        }
+
+        // special tools: the player's tool FSM sets ToolWrenchSize to a literal per tool (screwdriver, lug wrench...);
+        // spanners and sockets use their mesh scale (0.5..1.5 = 5..15 mm)
+        static Dictionary<float, string> tools;
+        static float nextToolTry;
+        // The tool FSM only becomes readable after the player has taken out the tools once (until then its object is
+        // inactive and its actions can't be loaded), so retry every few seconds until it worked.
+        static void InitTools()
+        {
+            if (tools != null && tools.Count > 0) return;
+            if (tools != null && Time.time < nextToolTry) return;
+            nextToolTry = Time.time + 5f;
+            tools = new Dictionary<float, string>();
+            foreach (PlayMakerFSM f in Resources.FindObjectsOfTypeAll(typeof(PlayMakerFSM)))
+            {
+                if (f.FsmName != "PickUp" || f.gameObject.name != "Pick" || f.transform.parent == null || f.transform.parent.name != "2Spanner") continue;
+                if (f.Fsm == null || !f.Fsm.Initialized) continue;
+                foreach (FsmState s in f.FsmStates)
+                    foreach (FsmStateAction a in FsmSim.ActionsOf(s))
+                    {
+                        SetFloatValue sv = a as SetFloatValue;
+                        if (sv == null || sv.floatVariable == null || sv.floatVariable.Name != "ToolWrenchSize" || sv.floatValue == null || sv.floatValue.UseVariable) continue;
+                        float v = Mathf.Round(sv.floatValue.Value * 100f) / 100f;
+                        if (!tools.ContainsKey(v)) tools[v] = s.Name.ToLower();
+                    }
+                break;
+            }
+        }
+
+        public static string ToolName(float size)
+        {
+            if (size <= 0f) return "by hand";
+            InitTools();
+            foreach (KeyValuePair<float, string> kv in tools) if (Mathf.Abs(kv.Key - size) <= 0.021f) return kv.Value;
+            float mm = size * 10f;
+            if (Mathf.Abs(mm - Mathf.Round(mm)) < 0.21f) return Mathf.RoundToInt(mm) + " mm";
+            return "size " + size.ToString("0.00");
+        }
+
+        // "4 × 10 mm, 1 × screwdriver"
+        public static string Summary(List<BoltInfo> list, Predicate<BoltInfo> which)
+        {
+            Dictionary<string, int> n = new Dictionary<string, int>();
+            List<string> order = new List<string>();
+            foreach (BoltInfo b in list)
+            {
+                if (!which(b)) continue;
+                string tool = b.Fsm.FsmName == "HandRotate" ? "by hand" : ToolName(Size(b));
+                if (!n.ContainsKey(tool)) { n[tool] = 0; order.Add(tool); }
+                n[tool]++;
+            }
+            order.Sort();
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            foreach (string k in order) { if (sb.Length > 0) sb.Append(", "); sb.Append(n[k]).Append(" \u00d7 ").Append(k); }
+            return sb.ToString();
+        }
+
+        public static bool HasBolts(GameObject part)
+        {
+            List<BoltInfo> tmp = new List<BoltInfo>();
+            Collect(part, tmp);
+            return tmp.Count > 0;
         }
 
         // bolts that belong to this part (not to parts installed on it)

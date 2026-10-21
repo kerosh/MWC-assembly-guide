@@ -30,6 +30,7 @@ namespace AssemblyGuide
         public List<string> Blockers = new List<string>();   // remove these first
         public List<string> Needs = new List<string>();      // install these first
         public string Note = "";
+        public string Incompatible;   // refused because an installed part is the wrong kind, e.g. "Flexplate (Flywheel flexplate)"
     }
 
     public class MissingItem
@@ -39,7 +40,8 @@ namespace AssemblyGuide
         public int Order;
         public List<string> WouldBlock = new List<string>();   // still-missing parts this one would block
         public List<string> Names = new List<string>();        // socket names behind this line
-        public int Rank { get { return CanNow ? (WouldBlock.Count == 0 ? 0 : 1) : 2; } }
+        public bool NotNeeded;                                  // summary line: parts that don't fit with what is installed
+        public int Rank { get { return NotNeeded ? 3 : CanNow ? (WouldBlock.Count == 0 ? 0 : 1) : 2; } }
     }
 
     public static class Sockets
@@ -182,30 +184,32 @@ namespace AssemblyGuide
                 GetFsmBool g = a as GetFsmBool;
                 if (g != null)
                 {
+                    // only "is it installed" reads are order rules; other flags (e.g. flywheel "Flexplate") are compatibility checks
+                    if (g.variableName == null || g.variableName.UseVariable || (g.variableName.Value != "Installed" && g.variableName.Value != "Bolted")) continue;
                     GameObject t = OwnerStatic(f, g.gameObject);
                     if (t != null && g.storeValue != null && !string.IsNullOrEmpty(g.storeValue.Name) && t.name.StartsWith("VINP_"))
                         varSrc[g.storeValue.Name] = t.name;
                     continue;
                 }
-                BoolNoneTrue none = a as BoolNoneTrue;
-                if (none != null && none.boolVariables != null)
+                // multi-bool checks: what they mean depends on where their event leads (on to "Far" = allowed, back to the start = refused)
+                FsmBool[] bv = null; FsmEvent ev = null; string kind = null;
+                BoolNoneTrue none = a as BoolNoneTrue; if (none != null) { bv = none.boolVariables; ev = none.sendEvent; kind = "none"; }
+                BoolAllTrue allT = a as BoolAllTrue; if (allT != null) { bv = allT.boolVariables; ev = allT.sendEvent; kind = "all"; }
+                BoolAnyTrue anyT = a as BoolAnyTrue; if (anyT != null) { bv = anyT.boolVariables; ev = anyT.sendEvent; kind = "any"; }
+                if (kind != null)
                 {
-                    foreach (FsmBool b in none.boolVariables)
-                        if (b != null && varSrc.ContainsKey(b.Name)) Add(si.BlockedBy, varSrc[b.Name]);
-                    continue;
-                }
-                BoolAllTrue allT = a as BoolAllTrue;
-                if (allT != null && allT.boolVariables != null)
-                {
-                    foreach (FsmBool b in allT.boolVariables)
-                        if (b != null && varSrc.ContainsKey(b.Name)) Add(si.Requires, varSrc[b.Name]);
-                    continue;
-                }
-                BoolAnyTrue anyT = a as BoolAnyTrue;
-                if (anyT != null && anyT.boolVariables != null)
-                {
-                    foreach (FsmBool b in anyT.boolVariables)
-                        if (b != null && varSrc.ContainsKey(b.Name)) Add(si.RequiresAny, varSrc[b.Name]);
+                    if (bv == null) continue;
+                    bool away = LeadsAway(sim, RuleState, ev, start);
+                    bool back = !away && ev != null && !string.IsNullOrEmpty(ev.Name);
+                    if (!away && !back) continue;
+                    foreach (FsmBool b in bv)
+                    {
+                        if (b == null || !varSrc.ContainsKey(b.Name)) continue;
+                        string src = varSrc[b.Name];
+                        if (kind == "none") { if (away) Add(si.BlockedBy, src); else Add(si.RequiresAny, src); }
+                        else if (kind == "all") { if (away) Add(si.Requires, src); else Add(si.BlockedBy, src); }
+                        else { if (away) Add(si.RequiresAny, src); else Add(si.BlockedBy, src); }
+                    }
                     continue;
                 }
                 BoolTest bt = a as BoolTest;
@@ -280,17 +284,29 @@ namespace AssemblyGuide
             c.Known = true;
             c.Allowed = st.ExitState != data.Fsm.StartState;
             if (c.Allowed) return c;
+            SocketInfo me; Info.TryGetValue(data.gameObject.name, out me);
             foreach (SimDecision d in st.Trace)
             {
-                if (d.Action == "BoolNoneTrue") foreach (GameObject g in d.TrueSources) Add(c.Blockers, Nice(g.name));
-                else if (d.Action == "BoolAllTrue" || d.Action == "BoolAnyTrue") foreach (GameObject g in d.FalseSources) Add(c.Needs, Nice(g.name));
-                else if (d.Action == "BoolTest")
+                bool boolDec = d.Action == "BoolNoneTrue" || d.Action == "BoolAllTrue" || d.Action == "BoolAnyTrue" || d.Action == "BoolTest";
+                if (!boolDec) { if (d.S == Src.Other || d.S == Src.Plain) c.Note = d.Text; continue; }
+                for (int i = 0; i < d.TrueSources.Count; i++)
                 {
-                    SocketInfo si; Info.TryGetValue(data.gameObject.name, out si);
-                    foreach (GameObject g in d.TrueSources) if (si == null || si.BlockedBy.Contains(g.name)) Add(c.Blockers, Nice(g.name));
-                    foreach (GameObject g in d.FalseSources) if (si == null || si.Requires.Contains(g.name)) Add(c.Needs, Nice(g.name));
+                    string v = i < d.TrueVars.Count ? d.TrueVars[i] : "Installed";
+                    string sn = d.TrueSources[i].name, n = Nice(sn);
+                    bool blocks = me == null || me.BlockedBy.Contains(sn);
+                    if (v == "Bolted") { if (blocks) Add(c.Blockers, n + " (unbolt it)"); continue; }
+                    if (v != "Installed") { c.Incompatible = v + " (" + n + ")"; c.Note = "not compatible with " + c.Incompatible; continue; }
+                    if (blocks) Add(c.Blockers, n);
                 }
-                else if (d.S == Src.Other || d.S == Src.Plain) c.Note = d.Text;
+                for (int i = 0; i < d.FalseSources.Count; i++)
+                {
+                    string v = i < d.FalseVars.Count ? d.FalseVars[i] : "Installed";
+                    string sn = d.FalseSources[i].name, n = Nice(sn);
+                    bool needed = me == null || me.Requires.Contains(sn) || me.RequiresAny.Contains(sn);
+                    if (v == "Bolted") { if (needed) Add(c.Needs, n + " (bolt it)"); continue; }
+                    if (v != "Installed") { if (d.Action != "BoolNoneTrue") c.Note = "needs " + v + " (" + n + ")"; continue; }
+                    if (needed) Add(c.Needs, n);
+                }
             }
             return c;
         }
@@ -388,6 +404,7 @@ namespace AssemblyGuide
             Dictionary<string, PlayMakerFSM> byName = new Dictionary<string, PlayMakerFSM>();
             foreach (PlayMakerFSM f in socks) byName[f.gameObject.name] = f;
             HashSet<int> groupsDone = new HashSet<int>();
+            Dictionary<string, InstallCheck> checks = new Dictionary<string, InstallCheck>();
 
             foreach (PlayMakerFSM f in socks)
             {
@@ -420,7 +437,7 @@ namespace AssemblyGuide
                     text = sb.ToString();
                 }
                 bool can = false;
-                foreach (PlayMakerFSM m in members) { InstallCheck c = CheckInstall(m); if (c.Allowed) can = true; }
+                foreach (PlayMakerFSM m in members) { InstallCheck c = CheckInstall(m); checks[m.gameObject.name] = c; if (c.Allowed) can = true; }
                 MissingItem it = new MissingItem();
                 it.Text = text; it.CanNow = can; it.Order = si.Order;
                 foreach (PlayMakerFSM m in members) it.Names.Add(m.gameObject.name);
@@ -433,11 +450,53 @@ namespace AssemblyGuide
                 SocketInfo si;
                 if (Info.TryGetValue(f.gameObject.name, out si) && !si.Optional && !Installed(f)) missingNames.Add(f.gameObject.name);
             }
+            // parts the game refuses because an installed part is the wrong kind (clutch cover plate on a flexplate), plus the
+            // parts that only belong with them (go on before them, or need them): not needed, shown as one dimmed line
+            Dictionary<string, string> notNeeded = new Dictionary<string, string>();
+            foreach (KeyValuePair<string, InstallCheck> kv in checks) if (kv.Value.Incompatible != null) notNeeded[kv.Key] = kv.Value.Incompatible;
+            bool grew = notNeeded.Count > 0;
+            while (grew)
+            {
+                grew = false;
+                foreach (string n in missingNames)
+                {
+                    SocketInfo si;
+                    if (notNeeded.ContainsKey(n) || !Info.TryGetValue(n, out si)) continue;
+                    string why = null;
+                    foreach (string r in si.BlockedBy) if (notNeeded.ContainsKey(r)) { why = notNeeded[r]; break; }
+                    if (why == null) foreach (string r in si.Requires) if (notNeeded.ContainsKey(r)) { why = notNeeded[r]; break; }
+                    if (why != null) { notNeeded[n] = why; grew = true; }
+                }
+            }
+            if (notNeeded.Count > 0)
+            {
+                Dictionary<string, List<string>> byReason = new Dictionary<string, List<string>>();
+                List<MissingItem> keep = new List<MissingItem>();
+                foreach (MissingItem it in res)
+                {
+                    bool all = it.Names.Count > 0;
+                    foreach (string n in it.Names) if (!notNeeded.ContainsKey(n)) all = false;
+                    if (!all) { keep.Add(it); continue; }
+                    string why = notNeeded[it.Names[0]];
+                    if (!byReason.ContainsKey(why)) byReason[why] = new List<string>();
+                    byReason[why].Add(it.Text);
+                }
+                res = keep;
+                foreach (string n in notNeeded.Keys) missingNames.Remove(n);
+                foreach (KeyValuePair<string, List<string>> kv in byReason)
+                {
+                    MissingItem ni = new MissingItem();
+                    ni.NotNeeded = true; ni.Order = int.MaxValue;
+                    ni.Text = "not needed with " + kv.Key + ": " + string.Join(", ", kv.Value.ToArray());
+                    res.Add(ni);
+                }
+            }
             foreach (MissingItem it in res)
                 foreach (string n in it.Names)
                     foreach (string wb in WouldBlock(n, missingNames))
                         if (!it.WouldBlock.Contains(wb)) it.WouldBlock.Add(wb);
-            total = res.Count;
+            total = 0;
+            foreach (MissingItem it in res) if (!it.NotNeeded) total++;
             res.Sort(delegate (MissingItem a, MissingItem b)
             {
                 int c = a.Rank.CompareTo(b.Rank);

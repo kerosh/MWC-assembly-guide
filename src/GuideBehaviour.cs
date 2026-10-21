@@ -55,6 +55,9 @@ namespace AssemblyGuide
         // ---- bolt marks
         public bool ShowBolts = true;
         GameObject boltPart;
+        bool boltPartRemovable = true;
+        GameObject boltRoot;                               // whole assembly of the looked-at part
+        List<BoltInfo> otherBolts = new List<BoltInfo>();  // fasteners of the rest of the assembly (only loose ones are drawn)     // false: something blocks taking it off -> tight bolts are not drawn
         List<BoltInfo> bolts = new List<BoltInfo>();
         float nextBoltRefresh;
         Texture2D dotTex;
@@ -166,12 +169,18 @@ namespace AssemblyGuide
                 if (bolting && (lookPartChanged || Time.time >= nextBoltRefresh))
                 {
                     boltPart = lookPart;
-                    try { Bolts.Collect(boltPart, bolts); } catch (Exception e) { bolts.Clear(); ModConsole.Error("[AssemblyGuide] bolts: " + e.Message); }
+                    try
+                    {
+                        Bolts.Collect(boltPart, bolts); boltPartRemovable = Bolts.Removable(boltPart);
+                        boltRoot = Bolts.TopPart(boltPart);
+                        if (boltRoot != null && boltRoot != boltPart) Bolts.CollectOthers(boltRoot, boltPart, otherBolts); else otherBolts.Clear();
+                    }
+                    catch (Exception e) { bolts.Clear(); ModConsole.Error("[AssemblyGuide] bolts: " + e.Message); }
                     nextBoltRefresh = Time.time + 2f;
                 }
             }
             else if (showList && Time.time >= nextListRefresh) { RefreshTarget(); nextListRefresh = Time.time + 1.5f; }
-            if (!bolting && bolts.Count > 0) { bolts.Clear(); boltPart = null; }
+            if (!bolting && (bolts.Count > 0 || otherBolts.Count > 0)) { bolts.Clear(); otherBolts.Clear(); boltPart = null; }
         }
 
         // nearest free socket of the part's group (like the game does); re-picked as the player moves
@@ -354,15 +363,20 @@ namespace AssemblyGuide
             }
             if (hitT == null) return false;   // keep the previous target while looking at nothing
 
-            GameObject lp = null;
-            for (Transform p = hitT; p != null; p = p.parent) if (p.CompareTag("PART")) { lp = p.gameObject; break; }
+            GameObject lp = Bolts.PartOf(hitT);
+            if (ShowBolts && AssemblyGuideMod.On(AssemblyGuideMod.sBolts) && (lp == null || !Bolts.HasBolts(lp)))
+            {
+                // installed parts often have their collider off: take the part whose bolt is nearest to the line of sight
+                GameObject alt = Bolts.NearestBoltPart(cam.transform.position, cam.transform.forward, bd + 1f, 0.12f);
+                if (alt != null) lp = alt;
+            }
             if (lp != lookPart) { lookPart = lp; lookPartChanged = true; }   // null = looking at a non-part (car body ...)
 
             Transform asm = null;
             for (Transform p = hitT; p != null; p = p.parent)
             {
                 if (car != null && p == car.transform) break;
-                if (p.CompareTag("PART") && HasSockets(p)) { asm = p; break; }
+                if (Bolts.IsPart(p.gameObject) && HasSockets(p)) { asm = p; break; }
             }
             bool carArea = asm == null && car != null && hitT.IsChildOf(car.transform);
             if (asm == null && !carArea) return false;
@@ -426,7 +440,7 @@ namespace AssemblyGuide
         void OnGUI()
         {
             if (!ready) return;
-            bool drawBolts = bolts.Count > 0 && ShowBolts && AssemblyGuideMod.On(AssemblyGuideMod.sBolts);
+            bool drawBolts = (bolts.Count > 0 || otherBolts.Count > 0) && ShowBolts && AssemblyGuideMod.On(AssemblyGuideMod.sBolts);
             if (HeldPart == null && !showList && !drawBolts) return;
             EnsureStyles();
             if (drawBolts) DrawBolts();
@@ -471,7 +485,7 @@ namespace AssemblyGuide
                 if (sp.z <= 0.05f) continue;
                 Color c;
                 if (b.Kind == BoltKind.Calibration) { c = new Color(1f, 0.85f, 0.1f, 0.95f); cal++; }
-                else if (Bolts.Tight(b)) { c = new Color(0.25f, 1f, 0.35f, 0.95f); tight++; }
+                else if (Bolts.Tight(b)) { tight++; if (!boltPartRemovable) continue; c = new Color(0.25f, 1f, 0.35f, 0.95f); }
                 else { c = new Color(1f, 0.2f, 0.15f, 0.95f); loose++; }
                 Rect r = new Rect(sp.x - size / 2f, Screen.height - sp.y - size / 2f, size, size);
                 GUI.color = new Color(0f, 0f, 0f, 0.8f);
@@ -479,11 +493,40 @@ namespace AssemblyGuide
                 GUI.color = c;
                 GUI.DrawTexture(r, dotTex);
             }
+            // loose bolts elsewhere on the same assembly (smaller red dots)
+            int otherLoose = 0;
+            float small = size * 0.75f;
+            foreach (BoltInfo b in otherBolts)
+            {
+                if (b.Fsm == null || !b.Fsm.gameObject.activeInHierarchy || Bolts.Tight(b)) continue;
+                otherLoose++;
+                Vector3 sp = cam.WorldToScreenPoint(Bolts.Pos(b));
+                if (sp.z <= 0.05f) continue;
+                Rect r = new Rect(sp.x - small / 2f, Screen.height - sp.y - small / 2f, small, small);
+                GUI.color = new Color(0f, 0f, 0f, 0.8f);
+                GUI.DrawTexture(new Rect(r.x - 2f, r.y - 2f, r.width + 4f, r.height + 4f), dotTex);
+                GUI.color = new Color(1f, 0.2f, 0.15f, 0.85f);
+                GUI.DrawTexture(r, dotTex);
+            }
             GUI.color = old;
-            if (boltPart != null && (tight + loose + cal) > 0 && AssemblyGuideMod.On(AssemblyGuideMod.sLabel))
+            if (boltPart != null && (tight + loose + cal + otherLoose) > 0 && AssemblyGuideMod.On(AssemblyGuideMod.sLabel))
             {
                 string s = Sockets.PartName(boltPart) + ":  <color=#77ee77>" + tight + " tight</color>  <color=#ff6655>" + loose + " loose</color>" +
-                           (cal > 0 ? "  <color=#ffd84a>" + cal + " adjust</color>" : "");
+                           (cal > 0 ? "  <color=#ffd84a>" + cal + " adjust</color>" : "") +
+                           (!boltPartRemovable && tight > 0 ? "  <color=#999999>(can't be removed now)</color>" : "");
+                if (AssemblyGuideMod.On(AssemblyGuideMod.sBoltList))
+                {
+                    string lo = Bolts.Summary(bolts, delegate (BoltInfo b) { return b.Kind == BoltKind.Fastener && !Bolts.Tight(b); });
+                    string ti = Bolts.Summary(bolts, delegate (BoltInfo b) { return b.Kind == BoltKind.Fastener && Bolts.Tight(b); });
+                    string ad = Bolts.Summary(bolts, delegate (BoltInfo b) { return b.Kind == BoltKind.Calibration; });
+                    if (lo.Length > 0) s += "\n<color=#ff6655>loose:</color> " + lo;
+                    if (ti.Length > 0) s += "\n<color=#77ee77>tight:</color> " + ti;
+                    if (ad.Length > 0) s += "\n<color=#ffd84a>adjust:</color> " + ad;
+                    if (otherLoose > 0)
+                        s += "\n<color=#ff8877>loose elsewhere on " + Sockets.PartName(boltRoot) + ":</color> " +
+                             Bolts.Summary(otherBolts, delegate (BoltInfo b) { return !Bolts.Tight(b); });
+                }
+                else if (otherLoose > 0) s += "\n<color=#ff8877>" + otherLoose + " loose elsewhere on " + Sockets.PartName(boltRoot) + "</color>";
                 float w = textStyle.fontSize * 22f;
                 float h = textStyle.CalcHeight(new GUIContent(s), w);
                 Box(new Rect((Screen.width - w) / 2f, Screen.height * 0.82f, w, h), s);
@@ -512,7 +555,8 @@ namespace AssemblyGuide
             foreach (MissingItem it in list)
             {
                 if (n++ >= max) { sb.Append("<color=#999999>... ").Append(list.Count - max).Append(" more</color>\n"); break; }
-                if (!it.CanNow) sb.Append("<color=#999999>").Append(it.Text).Append("</color>\n");
+                if (it.NotNeeded) sb.Append("<color=#777777><i>").Append(it.Text).Append("</i></color>\n");
+                else if (!it.CanNow) sb.Append("<color=#999999>").Append(it.Text).Append("</color>\n");
                 else if (it.WouldBlock.Count > 0)
                     sb.Append("<color=#ffa040>").Append(it.Text).Append("</color> <color=#bbbbbb>- first: ").Append(string.Join(", ", it.WouldBlock.ToArray())).Append("</color>\n");
                 else sb.Append("<color=#77ee77>").Append(it.Text).Append("</color>\n");

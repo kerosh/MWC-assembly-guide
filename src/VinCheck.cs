@@ -181,7 +181,7 @@ namespace AssemblyGuide
             }
             if (!r.Pass)
                 foreach (SimDecision d in st.Trace)
-                    if (d.S == Src.Target && !string.IsNullOrEmpty(d.Text) && r.Reasons.Count < 4)
+                    if ((d.S == Src.Target || d.HasTarget) && !string.IsNullOrEmpty(d.Text) && d.Text.IndexOf("assumed]") < 0 && r.Reasons.Count < 4)
                     {
                         string why = Reason(d);
                         if (why != null && !r.Reasons.Contains(why)) r.Reasons.Add(why);
